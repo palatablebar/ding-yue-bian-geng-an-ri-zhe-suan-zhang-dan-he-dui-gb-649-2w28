@@ -52,20 +52,32 @@ def rebuild(store, run_id: str, settings) -> dict:
 
 
 def change_rows(store, run_id: str) -> list[dict]:
-    """变更序列 + 抵扣行，页面与接口共用同一份数据。"""
+    """变更序列 + 抵扣行，页面与接口共用同一份数据。
+
+    变更只写订阅号与生效时间：展示时按本地日找回覆盖它的账期，
+    抵扣行也只挂到那个账期的账单上；期间外的变更不挂账单。
+    """
     changes = store.list_changes(run_id)
     components = store.list_components(run_id)
     by_invoice: dict[str, list[dict]] = {}
     for component in components:
         by_invoice.setdefault(component["invoice_id"], []).append(component)
-    subs = {sub["sub_id"]: sub for sub in store.list_subscriptions(run_id)}
+    periods_by_sub: dict[str, list[dict]] = {}
+    for sub in store.list_subscriptions(run_id):
+        periods_by_sub.setdefault(sub["sub_id"], []).append(sub)
     rows = []
     for change in changes:
-        sub = subs.get(change["sub_id"], {})
-        invoice_id = invoice_mod.invoice_id_for(sub) if sub else ""
+        periods = periods_by_sub.get(change["sub_id"], [])
+        covering = None
+        for sub in periods:
+            if sub["period_start"] <= change["local_date"] < sub["period_end"]:
+                covering = sub
+                break
+        fallback = periods[0] if periods else {}
+        invoice_id = invoice_mod.invoice_id_for(covering) if covering else ""
         rows.append({
             **change,
-            "account": sub.get("account", ""),
+            "account": (covering or fallback).get("account", ""),
             "invoice_id": invoice_id,
             "kind_label": config.KIND_LABELS.get(change["kind"], change["kind"]),
             "components": by_invoice.get(invoice_id, []) if change["applied"] else [],

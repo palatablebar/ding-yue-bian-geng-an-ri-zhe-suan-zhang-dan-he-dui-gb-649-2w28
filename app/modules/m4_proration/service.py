@@ -8,11 +8,14 @@ from __future__ import annotations
 from decimal import Decimal, localcontext
 
 from ... import config
+from ..m6_invoices import invoice as invoice_mod
 from . import prorate, rounding
 
 
 def _sub_index(store, run_id: str) -> dict[str, dict]:
-    return {sub["sub_id"]: sub for sub in store.list_subscriptions(run_id)}
+    """按账单号索引订阅账期行：同一订阅的多个账期各自独立折算。"""
+    return {invoice_mod.invoice_id_for(sub): sub
+            for sub in store.list_subscriptions(run_id)}
 
 
 def _group(rows: list[dict]) -> dict[str, list[dict]]:
@@ -35,7 +38,7 @@ def recompute_amounts(store, run_id: str, settings) -> dict:
     cents_total = 0
 
     for invoice_id, rows in _group(segments).items():
-        sub = subs[rows[0]["sub_id"]]
+        sub = subs[invoice_id]
         period_days = int(sub["period_days"])
         exacts = [
             prorate.segment_amount(Decimal(row["monthly"]), int(row["days"]),
@@ -88,7 +91,7 @@ def segment_rows(store, run_id: str) -> list[dict]:
     subs = _sub_index(store, run_id)
     rows = []
     for segment in store.list_segments(run_id):
-        sub = subs[segment["sub_id"]]
+        sub = subs[segment["invoice_id"]]
         period_days = int(sub["period_days"])
         monthly = Decimal(segment["monthly"] or "0")
         rows.append({

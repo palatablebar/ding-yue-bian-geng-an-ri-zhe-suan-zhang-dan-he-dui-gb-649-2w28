@@ -32,8 +32,9 @@ REASONS: dict[str, tuple[str, str]] = {
     "R_TZ_UNKNOWN": ("error", "时区无法解析"),
     "R_STATE_UNKNOWN": ("error", "状态无法识别"),
     # ---- 订阅键 ----
-    "R_DUP_SUB_KEY": ("error", "订阅号重复且取值冲突"),
-    "R_DUP_SUB_ROW": ("info", "订阅号重复且取值相同"),
+    "R_DUP_SUB_KEY": ("error", "同一订阅同一账期取值冲突"),
+    "R_DUP_SUB_ROW": ("info", "同一订阅同一账期重复导出"),
+    "R_PERIOD_OVERLAP": ("error", "账期与同一订阅的既有账期重叠"),
     # ---- 变更 ----
     "R_CHANGE_UNKNOWN_SUB": ("error", "变更引用未知订阅"),
     "R_CHANGE_KIND": ("error", "变更类型无法识别"),
@@ -46,7 +47,7 @@ REASONS: dict[str, tuple[str, str]] = {
     "R_CHANGE_OUT_OF_PERIOD": ("warn", "变更生效日在账单期间外"),
     "R_CHANGE_ON_PERIOD_START": ("warn", "变更生效日等于期间首日"),
     # ---- 账单 ----
-    "R_DUP_INVOICE": ("error", "同一订阅同一期间出现两张账单"),
+    "R_DUP_INVOICE": ("error", "同一订阅同一账单月出现两个账期"),
     "R_INVOICE_ZERO": ("info", "账单金额为零"),
     "R_ROUND_ADJUST": ("info", "尾差按最大余额分配到分"),
 }

@@ -22,7 +22,8 @@ def _group(rows: list[dict]) -> dict[str, list[dict]]:
 def rebuild(store, run_id: str, settings) -> dict:
     run = store.get_run(run_id) or {}
     counters = run.get("counters", {})
-    subs = {sub["sub_id"]: sub for sub in store.list_subscriptions(run_id)}
+    subs = {invoice_mod.invoice_id_for(sub): sub
+            for sub in store.list_subscriptions(run_id)}
     segments = store.list_segments(run_id)
     components = store.list_components(run_id)
     segment_groups = _group(segments)
@@ -30,7 +31,7 @@ def rebuild(store, run_id: str, settings) -> dict:
 
     invoices: list[dict] = []
     for invoice_id, rows in sorted(segment_groups.items()):
-        sub = subs.get(rows[0]["sub_id"])
+        sub = subs.get(invoice_id)
         if sub is None:
             continue
         invoices.append(invoice_mod.build_invoice(
@@ -60,10 +61,11 @@ def rebuild(store, run_id: str, settings) -> dict:
 def invoice_rows(store, run_id: str) -> list[dict]:
     from ..m4_proration import rounding
 
-    subs = {sub["sub_id"]: sub for sub in store.list_subscriptions(run_id)}
+    subs = {invoice_mod.invoice_id_for(sub): sub
+            for sub in store.list_subscriptions(run_id)}
     rows = []
     for row in store.list_invoices(run_id):
-        sub = subs.get(row["sub_id"], {})
+        sub = subs.get(row["invoice_id"], {})
         rows.append({
             **row,
             "amount": rounding.cents_text(row["total_cents"]),

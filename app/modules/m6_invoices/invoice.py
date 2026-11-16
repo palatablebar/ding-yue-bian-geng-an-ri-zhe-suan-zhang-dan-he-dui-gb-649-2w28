@@ -11,11 +11,15 @@ from ... import config
 from ..m4_proration import rounding
 
 
+def invoice_month(period_start: str) -> str:
+    """账单月：期间起的年月，账单号的一部分；同一订阅同一账单月只允许一个账期。"""
+    return str(period_start or "")[:7].replace("-", "")
+
+
 def invoice_id_for(sub: dict) -> str:
     if not sub:
         return ""
-    start = str(sub.get("period_start") or "")[:7].replace("-", "")
-    return f"INV-{start}-{sub.get('sub_id', '')}"
+    return f"INV-{invoice_month(sub.get('period_start'))}-{sub.get('sub_id', '')}"
 
 
 def _sum_cents(components: list[dict], kind: str) -> int:

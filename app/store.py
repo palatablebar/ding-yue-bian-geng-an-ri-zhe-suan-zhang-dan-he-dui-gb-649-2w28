@@ -316,7 +316,8 @@ class Store:
     def list_subscriptions(self, run_id: str) -> list[dict]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM subscriptions WHERE run_id=? ORDER BY sub_id", (run_id,)
+                "SELECT * FROM subscriptions WHERE run_id=? "
+                "ORDER BY sub_id, period_start, row_no", (run_id,)
             ).fetchall()
         out = []
         for row in rows:

@@ -13,6 +13,7 @@ from ... import reasons
 from ...reasons import level_of
 from ..m1_ingest import columns as column_mod
 from ..m2_calendar import service as calendar_service
+from ..m6_invoices import invoice as invoice_mod
 from . import quarantine, rules
 
 REQUIRED_SUB = column_mod.SUB_REQUIRED
@@ -65,6 +66,30 @@ def _signature(record: dict) -> tuple:
     )
 
 
+def _period_key(record: dict) -> tuple[str, str, str]:
+    """订阅行业务键：订阅号 + 账期。同一订阅的不同账期是合法续期，各自出账。"""
+    return (record["sub_id"], record["period_start"], record["period_end"])
+
+
+def _period_conflict(periods: list[dict], record: dict) -> tuple[dict, str] | None:
+    """同一订阅的既有账期里，与新行冲突的第一条（重叠或同一账单月）。
+
+    半开区间重叠 ⇒ 同一批天会被计两次费；同一账单月 ⇒ 账单号撞号，
+    两种都不能各自出账，只能保留先到的行、把后到的行隔离留证。
+    """
+    start = dt.date.fromisoformat(record["period_start"])
+    end = dt.date.fromisoformat(record["period_end"])
+    month = invoice_mod.invoice_month(record["period_start"])
+    for kept in periods:
+        kept_start = dt.date.fromisoformat(kept["period_start"])
+        kept_end = dt.date.fromisoformat(kept["period_end"])
+        if start < kept_end and kept_start < end:
+            return kept, "R_PERIOD_OVERLAP"
+        if invoice_mod.invoice_month(kept["period_start"]) == month:
+            return kept, "R_DUP_INVOICE"
+    return None
+
+
 def _normalize_subscriptions(table, settings) -> tuple[list[dict], list[dict], dict]:
     mapping = column_mod.sub_header(table.header)
     entries = _file_entries(table, mapping, REQUIRED_SUB)
@@ -83,7 +108,8 @@ def _normalize_subscriptions(table, settings) -> tuple[list[dict], list[dict], d
 
     header_len = len(table.header)
     records: list[dict] = []
-    seen: dict[str, dict] = {}
+    seen: dict[tuple[str, str, str], dict] = {}
+    periods_by_sub: dict[str, list[dict]] = {}
     error_rows: set[int] = set()
 
     def reject(row_no: int, code: str, field: str = "", raw: str = "", detail: str = ""):
@@ -150,22 +176,38 @@ def _normalize_subscriptions(table, settings) -> tuple[list[dict], list[dict], d
             "row_no": row.row_no,
             "flags": list(price.flags),
         }
-        if sub_id in seen:
-            kept = seen[sub_id]
+        key = _period_key(record)
+        if key in seen:
+            kept = seen[key]
             if _signature(kept) == _signature(record):
                 entries.append(_entry(table.name, row.row_no, "R_DUP_SUB_ROW",
                                       field="订阅号", raw=sub_id,
-                                      detail=f"与第 {kept['row_no']} 行完全相同"))
+                                      detail=f"账期 {record['period_start']}~{record['period_end']} "
+                                             f"与第 {kept['row_no']} 行完全相同"))
                 counts["dropped_dup"] += 1
             else:
                 entries.append(_entry(table.name, row.row_no, "R_DUP_SUB_KEY",
-                                      field="订阅号", raw=sub_id,
-                                      detail=f"与第 {kept['row_no']} 行取值冲突，保留前者"))
+                                      field="订阅号", raw=row.raw,
+                                      detail=f"账期 {record['period_start']}~{record['period_end']} "
+                                             f"与第 {kept['row_no']} 行取值冲突，保留前者"))
                 error_rows.add(row.row_no)
                 if "R_DUP_SUB_KEY" not in kept["flags"]:
                     kept["flags"].append("R_DUP_SUB_KEY")
             continue
-        seen[sub_id] = record
+        conflict = _period_conflict(periods_by_sub.get(sub_id, []), record)
+        if conflict is not None:
+            kept, code = conflict
+            entries.append(_entry(table.name, row.row_no, code, field="期间",
+                                  raw=row.raw,
+                                  detail=f"账期 {record['period_start']}~{record['period_end']} "
+                                         f"与第 {kept['row_no']} 行账期 "
+                                         f"{kept['period_start']}~{kept['period_end']} 冲突，保留前者"))
+            error_rows.add(row.row_no)
+            if code not in kept["flags"]:
+                kept["flags"].append(code)
+            continue
+        seen[key] = record
+        periods_by_sub.setdefault(sub_id, []).append(record)
         records.append(record)
 
     counts["kept"] = len(records)
@@ -194,7 +236,9 @@ def _normalize_changes(table, subs: list[dict], settings) -> tuple[list[dict], l
         return [], entries, counts
 
     header_len = len(table.header)
-    by_sub = {sub["sub_id"]: sub for sub in subs}
+    by_sub: dict[str, list[dict]] = {}
+    for sub in subs:
+        by_sub.setdefault(sub["sub_id"], []).append(sub)
     records: list[dict] = []
     error_rows: set[int] = set()
     last_utc: dict[str, dt.datetime] = {}
@@ -212,8 +256,8 @@ def _normalize_changes(table, subs: list[dict], settings) -> tuple[list[dict], l
                                   field="变更号/订阅号", raw=row.raw))
             error_rows.add(row.row_no)
             continue
-        sub = by_sub.get(sub_id)
-        if sub is None:
+        periods = by_sub.get(sub_id)
+        if not periods:
             entries.append(_entry(table.name, row.row_no, "R_CHANGE_UNKNOWN_SUB",
                                   field="订阅号", raw=sub_id))
             error_rows.add(row.row_no)
@@ -237,7 +281,7 @@ def _normalize_changes(table, subs: list[dict], settings) -> tuple[list[dict], l
             error_rows.add(row.row_no)
             continue
 
-        zone = rules.parse_zone(sub["tz"]).value or ZoneInfo(settings.display_tz)
+        zone = rules.parse_zone(periods[0]["tz"]).value or ZoneInfo(settings.display_tz)
         instant = parsed.value
         dst_flag = None
         if instant.offset is not None:
@@ -253,12 +297,19 @@ def _normalize_changes(table, subs: list[dict], settings) -> tuple[list[dict], l
             flags.append(dst_flag)
         if local_dt.time() != dt.time(0, 0):
             flags.append("R_TIME_TRUNCATED")
-        start = dt.date.fromisoformat(sub["period_start"])
-        end = dt.date.fromisoformat(sub["period_end"])
-        out_of_period = not (start <= local_day < end)
+        # 变更只写订阅号与生效时间：本地化后落入覆盖该本地日的账期；
+        # 账期互不重叠（M3 订阅侧保证），因此至多落入一个账期。
+        covering = None
+        for period in periods:
+            period_start = dt.date.fromisoformat(period["period_start"])
+            period_end = dt.date.fromisoformat(period["period_end"])
+            if period_start <= local_day < period_end:
+                covering = period_start
+                break
+        out_of_period = covering is None
         if out_of_period:
             flags.append("R_CHANGE_OUT_OF_PERIOD")
-        if local_day == start:
+        elif local_day == covering:
             flags.append("R_CHANGE_ON_PERIOD_START")
         previous = last_utc.get(sub_id)
         if previous is not None and utc < previous:
